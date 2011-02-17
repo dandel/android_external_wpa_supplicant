@@ -84,9 +84,10 @@ struct wpa_driver_wext_data {
 	char mlmedev[IFNAMSIZ + 1];
 
 	int scan_complete_events;
+	u8 ssid[32]; 
+	unsigned int ssid_len;
 	int errors;
 };
-
 
 static int wpa_driver_wext_flush_pmkid(void *priv);
 static int wpa_driver_wext_get_range(void *priv);
@@ -281,6 +282,10 @@ int wpa_driver_wext_set_ssid(void *priv, const u8 *ssid, size_t ssid_len)
 
 	if (ssid_len > 32)
 		return -1;
+
+	os_memset(drv->ssid, 0, 32);
+	os_memcpy(drv->ssid, ssid, ssid_len);
+	drv->ssid_len = ssid_len;
 
 	os_memset(&iwr, 0, sizeof(iwr));
 	os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
@@ -2525,69 +2530,196 @@ static char *wpa_driver_get_country_code(int channels)
 static int wpa_driver_priv_driver_cmd(void *priv, char *cmd, char *buf, size_t buf_len)
 {
 	struct wpa_driver_wext_data *drv = priv;
-	struct wpa_supplicant *wpa_s = (struct wpa_supplicant *)(drv->ctx);
-	struct iwreq iwr;
-	int ret = 0, flags;
+	int ret = -1;
 
-	wpa_printf(MSG_DEBUG, "%s %s len = %d", __func__, cmd, buf_len);
-
-	if (os_strcasecmp(cmd, "RSSI-APPROX") == 0) {
-		os_strncpy(cmd, "RSSI", MAX_DRV_CMD_SIZE);
+	wpa_printf(MSG_DEBUG, "WEXT:%s %s", __func__, cmd);
+	
+	if (os_strcasecmp(cmd, "START") == 0)
+	{
+		wpa_printf(MSG_DEBUG, "Start command");
+		return (ret);
 	}
-	else if( os_strncasecmp(cmd, "SCAN-CHANNELS", 13) == 0 ) {
-		int no_of_chan;
 
-		no_of_chan = atoi(cmd + 13);
-		os_snprintf(cmd, MAX_DRV_CMD_SIZE, "COUNTRY %s",
-			wpa_driver_get_country_code(no_of_chan));
+	if (os_strcasecmp(cmd, "STOP") == 0)
+	{
+		wpa_printf(MSG_DEBUG, "Stop command");
 	}
-	else if (os_strcasecmp(cmd, "STOP") == 0) {
-		if ((wpa_driver_wext_get_ifflags(drv, &flags) == 0) &&
-		    (flags & IFF_UP)) {
-			wpa_printf(MSG_ERROR, "WEXT: %s when iface is UP", cmd);
-			wpa_driver_wext_set_ifflags(drv, flags & ~IFF_UP);
+	else if (os_strcasecmp(cmd, "MACADDR") == 0) 
+	{
+		struct ifreq ifr;
+		os_memset(&ifr, 0, sizeof(ifr));
+		os_strncpy(ifr.ifr_name, drv->ifname, IFNAMSIZ);
+
+		if (ioctl(drv->ioctl_sock, SIOCGIFHWADDR, &ifr) < 0 )
+		{
+			perror("ioctl[SIOCGIFHWADDR");
+			ret = -1;
+		}
+		else
+		{
+			u8 *macaddr = (u8 *)ifr.ifr_hwaddr.sa_data;
+			ret = snprintf(buf, buf_len, "MAC_ADDR = " MACSTR "\n",	MAC2STR(macaddr));
 		}
 	}
-	else if( os_strcasecmp(cmd, "RELOAD") == 0 ) {
-		wpa_printf(MSG_DEBUG,"Reload command");
-		wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
-		return ret;
-	}
-
-	os_memset(&iwr, 0, sizeof(iwr));
-	os_strncpy(iwr.ifr_name, drv->ifname, IFNAMSIZ);
-	os_memcpy(buf, cmd, strlen(cmd) + 1);
-	iwr.u.data.pointer = buf;
-	iwr.u.data.length = buf_len;
-
-	if ((ret = ioctl(drv->ioctl_sock, SIOCSIWPRIV, &iwr)) < 0) {
-		perror("ioctl[SIOCSIWPRIV]");
-	}
-
-	if (ret < 0) {
-		wpa_printf(MSG_ERROR, "%s failed", __func__);
-		drv->errors++;
-		if (drv->errors > WEXT_NUMBER_SEQUENTIAL_ERRORS) {
-			drv->errors = 0;
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "HANGED");
+	else if (os_strcasecmp(cmd, "LINKSPEED") == 0)
+	{
+		struct iwreq wrq;
+		unsigned int linkspeed;
+		os_strncpy(wrq.ifr_name, drv->ifname, IFNAMSIZ);
+		wpa_printf(MSG_DEBUG, "Linkspeed command");
+		if (ioctl(drv->ioctl_sock, SIOCGIWRATE, &wrq) < 0)
+		{
+			perror("ioctl[SIOCGIWRATE]");
+			ret = -1;
+		}
+		else
+		{
+			linkspeed = wrq.u.bitrate.value / 1000000;
+			ret = snprintf(buf, buf_len, "LINKSPEED %d\n", linkspeed);
 		}
 	}
-	else {
-		drv->errors = 0;
-		ret = 0;
-		if ((os_strcasecmp(cmd, "RSSI") == 0) ||
-		    (os_strcasecmp(cmd, "LINKSPEED") == 0) ||
-		    (os_strcasecmp(cmd, "MACADDR") == 0)) {
-			ret = strlen(buf);
+	else if ((os_strcasecmp(cmd, "RSSI") == 0) || (os_strcasecmp(cmd, "RSSI-APPROX") == 0))
+	{
+		struct iwreq wrq;
+		struct iw_statistics stats;
+		signed int rssi;
+		wpa_printf(MSG_DEBUG, ">>>. DRIVER WEXT RSSI");
+		wrq.u.data.pointer = (caddr_t) &stats;
+		wrq.u.data.length = sizeof(stats);
+		wrq.u.data.flags = 1;
+		strncpy(wrq.ifr_name, drv->ifname, IFNAMSIZ);
+
+		if (ioctl(drv->ioctl_sock, SIOCGIWSTATS, &wrq) < 0) 
+		{
+			perror("ioctl[SIOCGIWSTATS]");
+			//wpa_printf(MSG_DEBUG, "Encountered an error!");
+			ret = -1;
 		}
-/*		else if (os_strcasecmp(cmd, "START") == 0) {
-			os_sleep(0, WPA_DRIVER_WEXT_WAIT_US);
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STARTED");
+		else
+		{
+			//wpa_printf(MSG_DEBUG, "No errors!");
+			if (stats.qual.updated & IW_QUAL_DBM) 
+			{
+				/* Values in dBm, stored in u8 with range 63 : -192 */
+				rssi = (stats.qual.level > 63) ? stats.qual.level - 0x100 : stats.qual.level;
+			}
+			else
+			{
+				rssi = stats.qual.level;
+			}
+			//wpa_printf(MSG_DEBUG, "rssi one = %d\n", rssi);
+			//wpa_printf(MSG_DEBUG, "ssid_len one = %d\n", drv->ssid_len);
+			//wpa_printf(MSG_DEBUG, "buf_len one = %d\n", buf_len);
+			if (drv->ssid_len != 0 && drv->ssid_len < buf_len) 
+			{
+				os_memcpy((void *) buf, (void *) (drv->ssid), drv->ssid_len);
+				ret = drv->ssid_len;
+				ret += snprintf(&buf[ret], buf_len-ret, "rssi %d\n", rssi);
+				wpa_printf(MSG_DEBUG, "ret is %d\n", ret);
+				if (ret < (int)buf_len)
+				{
+					return (ret);
+				}
+				//wpa_printf(MSG_DEBUG, "Somebody set up us the no return!\n");
+				ret = -1;
+			}
 		}
-		else if (os_strcasecmp(cmd, "STOP") == 0) {
-			wpa_msg(drv->ctx, MSG_INFO, WPA_EVENT_DRIVER_STATE "STOPPED");
-		}*/
-		wpa_printf(MSG_DEBUG, "%s %s len = %d, %d", __func__, buf, ret, strlen(buf));
+	}
+	else if (os_strncasecmp(cmd, "GET-RTS-THRESHOLD", 17) == 0)
+	{
+		struct iwreq wrq;
+		unsigned int rtsThreshold;
+
+		strncpy(wrq.ifr_name, drv->ifname, IFNAMSIZ);
+
+		if (ioctl(drv->ioctl_sock, SIOCGIWRTS, &wrq) < 0)
+		{
+			perror("ioctl[SIOCGIWTRTS");
+			ret = -1;
+		}
+		else
+		{
+			rtsThreshold = wrq.u.rts.value;
+			wpa_printf(MSG_DEBUG, "Get RtsThreshold command = %d\n", rtsThreshold);
+			ret = snprintf(buf, buf_len, "rts-threshold is%u\n", rtsThreshold);
+			if (ret < (int)buf_len)
+			{
+				return (ret);
+			}
+		}
+	}
+	else if (os_strncasecmp(cmd, "SET_RTS_THRESHOLD", 17) == 0)
+	{
+		struct iwreq wrq;
+		unsigned int rtsThreshold;
+		char *cp = cmd + 17;
+		char *endp;
+
+		strncpy(wrq.ifr_name, drv->ifname, IFNAMSIZ);
+		if (*cp != '\0')
+		{
+			rtsThreshold = (unsigned int)strtol(cp, &endp, 0);
+			if (endp != cp)
+			{
+				wrq.u.rts.value = rtsThreshold;
+				wrq.u.rts.fixed = 1;
+				wrq.u.rts.disabled = 0;
+
+				if (ioctl(drv->ioctl_sock, SIOCGIWRTS, &wrq) < 0)
+				{
+					perror("ioctl[SIOCGIWRTS]");
+					ret = -1;
+				}
+				else
+				{
+					rtsThreshold = wrq.u.rts.value;
+					wpa_printf(MSG_DEBUG, "Set RTS Threshold command = %d", rtsThreshold);
+					ret = 0;
+				}
+			}
+		}
+	}
+	else if (os_strcasecmp(cmd, "SNR") == 0)
+	{
+		struct iwreq wrq;
+		struct iw_statistics stats;
+		int snr, rssi, noise;
+		
+		wrq.u.data.pointer = (caddr_t) &stats;
+		wrq.u.data.length = sizeof(stats);
+		wrq.u.data.flags = 1; /* Clear update flags */
+		strncpy(wrq.ifr_name, drv->ifname, IFNAMSIZ);
+
+		if (ioctl(drv->ioctl_sock, SIOCGIWSTATS, &wrq) < 0)
+		{
+			perror("ioctl[SIOCGIWSTATS]");
+			ret = -1;
+		}
+		else
+		{
+			if (stats.qual.updated & IW_QUAL_DBM)
+			{
+				rssi = (stats.qual.level > 63) ? stats.qual.level - 0x100 : stats.qual.level;
+				noise = (stats.qual.level > 63) ? stats.qual.level - 0x100 : stats.qual.level;
+			}
+			else
+			{
+				rssi = stats.qual.level;
+				noise = stats.qual.level;
+			}
+
+			snr = rssi - noise;
+
+			ret = snprintf(buf, buf_len, "snr is %u\n", (unsigned int)snr);
+			if (ret < (int)buf_len) 
+			{
+				return ret;
+			}
+		}
+	}
+	else
+	{
+		wpa_printf(MSG_DEBUG, "Unsupported command");
 	}
 	return ret;
 }

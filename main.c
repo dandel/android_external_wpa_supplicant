@@ -133,8 +133,10 @@ int main(int argc, char *argv[])
 	struct wpa_params params;
 	struct wpa_global *global;
 
+        /*
 	if (os_program_init())
 		return -1;
+	*/
 
 	os_memset(&params, 0, sizeof(params));
 	params.wpa_debug_level = MSG_INFO;

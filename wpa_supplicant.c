@@ -112,6 +112,7 @@ extern struct wpa_driver_ops *wpa_supplicant_drivers[];
 extern int wpa_debug_level;
 extern int wpa_debug_show_keys;
 extern int wpa_debug_timestamp;
+int G_TRY_CONNECT=0;
 
 static void wpa_supplicant_scan(void *eloop_ctx, void *timeout_ctx);
 
@@ -1428,6 +1429,17 @@ void wpa_supplicant_associate(struct wpa_supplicant *wpa_s,
 			algs |= AUTH_ALG_LEAP;
 		wpa_printf(MSG_DEBUG, "Overriding auth_alg selection: 0x%x",
 			   algs);
+
+		if ((algs & AUTH_ALG_OPEN_SYSTEM) && (algs & AUTH_ALG_SHARED_KEY) ) {
+			algs = AUTH_ALG_SHARED_KEY;
+			G_TRY_CONNECT ++;
+
+			if (G_TRY_CONNECT >= 2) {
+				algs = AUTH_ALG_OPEN_SYSTEM;
+				wpa_printf(MSG_DEBUG, "Changed to ALG_OPEN_SYSTEM");
+				G_TRY_CONNECT = 0;
+			}
+												        }
 	}
 	wpa_drv_set_auth_alg(wpa_s, algs);
 
